@@ -195,14 +195,7 @@ pgmoneta_tsclient_status(int expected_error);
 int
 pgmoneta_tsclient_status_details(int expected_error);
 
-/**
- * List backups for a server
- * @param server the server name
- * @param response [out] the JSON response containing backup list
- * @return 0 upon success, otherwise 1
- */
-int
-pgmoneta_tsclient_list_backup(char* server, struct json** response);
+
 
 /**
  * Execute reload command on the server

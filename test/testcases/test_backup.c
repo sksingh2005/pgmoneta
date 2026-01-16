@@ -47,18 +47,18 @@ START_TEST(test_pgmoneta_backup_full)
    int num_backups_after = 0;
 
    // Query initial backup count via LIST_BACKUP
-   ret = pgmoneta_tsclient_list_backup("primary", &response);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response, 0);
    ck_assert_msg(ret == 0, "failed to list backups");
    num_backups_before = pgmoneta_tsclient_get_backup_count(response);
    pgmoneta_json_destroy(response);
    response = NULL;
 
    // Create full backup
-   ret = !pgmoneta_tsclient_backup("primary", NULL);
+   ret = !pgmoneta_tsclient_backup("primary", NULL, 0);
    ck_assert_msg(ret, "failed to add full backup");
 
    // Query backup count after creation
-   ret = pgmoneta_tsclient_list_backup("primary", &response);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response, 0);
    ck_assert_msg(ret == 0, "failed to list backups after backup");
    num_backups_after = pgmoneta_tsclient_get_backup_count(response);
    pgmoneta_json_destroy(response);
@@ -86,7 +86,7 @@ START_TEST(test_pgmoneta_backup_incremental_basic)
    ck_assert_msg(ret, "failed to add incremental backup 2");
 
    // Query backups
-   ret = pgmoneta_tsclient_list_backup("primary", &response);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response, 0);
    ck_assert_msg(ret == 0, "failed to get backup list from management protocol");
 
    // Verify we have exactly 3 backups

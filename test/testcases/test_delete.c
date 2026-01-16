@@ -57,7 +57,7 @@ START_TEST(test_pgmoneta_delete_chain_last)
    int num_bck_after = 0;
 
    // Query backups BEFORE deletion
-   ret = pgmoneta_tsclient_list_backup("primary", &response_before);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response_before, 0);
    ck_assert_msg(ret == 0, "failed to list backups before delete");
 
    // Verify we have 3 backups
@@ -66,11 +66,11 @@ START_TEST(test_pgmoneta_delete_chain_last)
    pgmoneta_json_destroy(response_before);
 
    // Delete newest backup
-   ret = !pgmoneta_tsclient_delete("primary", "newest");
+   ret = !pgmoneta_tsclient_delete("primary", "newest", 0);
    ck_assert_msg(ret, "success status not found");
 
    // Query backups AFTER deletion
-   ret = pgmoneta_tsclient_list_backup("primary", &response_after);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response_after, 0);
    ck_assert_msg(ret == 0, "failed to list backups after delete");
 
    // Verify we now have 2 backups
@@ -98,7 +98,7 @@ START_TEST(test_pgmoneta_delete_chain_middle)
    int num_bck_after = 0;
 
    // Query backups BEFORE deletion
-   ret = pgmoneta_tsclient_list_backup("primary", &response_before);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response_before, 0);
    ck_assert_msg(ret == 0, "failed to list backups before delete");
 
    // Verify we have 3 backups
@@ -117,11 +117,11 @@ START_TEST(test_pgmoneta_delete_chain_middle)
    label_before_2 = strdup(label_before_2);
 
    // Delete middle backup
-   ret = !pgmoneta_tsclient_delete("primary", label_to_delete);
+   ret = !pgmoneta_tsclient_delete("primary", label_to_delete, 0);
    ck_assert_msg(ret, "success status not found");
 
    // Query backups AFTER deletion
-   ret = pgmoneta_tsclient_list_backup("primary", &response_after);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response_after, 0);
    ck_assert_msg(ret == 0, "failed to list backups after delete");
 
    // Verify we now have 2 backups
@@ -160,7 +160,7 @@ START_TEST(test_pgmoneta_delete_chain_root)
    int num_bck_after = 0;
 
    // Query backups BEFORE deletion
-   ret = pgmoneta_tsclient_list_backup("primary", &response_before);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response_before, 0);
    ck_assert_msg(ret == 0, "failed to list backups before delete");
 
    // Verify we have 3 backups
@@ -174,11 +174,11 @@ START_TEST(test_pgmoneta_delete_chain_root)
    label_before_1 = strdup(label_before_1);
 
    // Delete oldest (root) backup
-   ret = !pgmoneta_tsclient_delete("primary", "oldest");
+   ret = !pgmoneta_tsclient_delete("primary", "oldest", 0);
    ck_assert_msg(ret, "success status not found");
 
    // Query backups AFTER deletion
-   ret = pgmoneta_tsclient_list_backup("primary", &response_after);
+   ret = pgmoneta_tsclient_list_backup("primary", NULL, &response_after, 0);
    ck_assert_msg(ret == 0, "failed to list backups after delete");
 
    // Verify we now have 2 backups
