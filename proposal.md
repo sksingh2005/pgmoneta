@@ -50,6 +50,7 @@ Add real-world and extreme cases covering timeline changes, active-write workloa
 ### D6. PG14-16 version coverage in test execution
 
 Ensure version-aware scenario runs and stable coverage for PostgreSQL 14, 15, and 16.
+This includes explicit test-environment and CI alignment for PG16.
 
 ### D7. Optional performance improvements
 
@@ -80,7 +81,7 @@ The current legacy incremental backup (`incr_backup_execute_14_to_16` in `wf_bac
 
 #### S2: Parse tablespace relation file paths into `rel_file_locator`
 
-- `parse_relation_file` currently handles only `base/` and `global/` prefixes. The `else` branch does `goto done;` — silently skipping tablespace paths.
+- `parse_relation_file` currently handles only `base/` and `global/` prefixes. The `else` branch does `goto done;` — returning success but without populating the `rlocator`, so tablespace paths are effectively not processed for incremental decisions.
 - PostgreSQL stores tablespace relations under `pg_tblspc/<spcOid>/PG_<major>_<catver>/<dbOid>/<relfilenode>` (as defined in PostgreSQL's `relpath.h`).
 - Add a third branch to extract `spcOid`, `dbOid`, and `relfilenode` from this path structure, and create the corresponding backup directory:
 
@@ -119,6 +120,7 @@ else if (!strcmp(results[0], "pg_tblspc"))
 - Tablespace path parsing follows PostgreSQL's `relpath.h` convention.
 - FSM forks are excluded from incremental tracking because PostgreSQL does not fully WAL-log them.
 - Block reads use `pg_read_binary_file` — PostgreSQL's standard server-side file access API.
+- If timeline continuity cannot be guaranteed safely, fail fast with a clear error and require a new full backup.
 
 ---
 
@@ -160,7 +162,9 @@ Current test coverage is minimal — only basic chain creation and restore are t
 1. Full backup on timeline 1.
 2. Promote a standby (creates timeline 2), insert data on new timeline.
 3. Incremental backup.
-4. Verify: WAL summary correctly spans the timeline transition, only blocks modified on the new timeline are captured, restore produces correct data.
+4. Verify expected behavior explicitly:
+   - if supported: correct changed-block capture and correct restore output,
+   - if not supported safely: explicit fail-fast with clear diagnostic and no partial/incorrect artifacts.
 
 **T6. Incremental backup during active concurrent updates**
 
@@ -262,7 +266,8 @@ The current `incr_backup_execute_14_to_16` processes all files sequentially in a
 2. Implement extreme tests T5-T6.
 3. Implement edge tests T7-T9.
 4. Implement regression tests T10-T11.
-5. Stabilize test reproducibility and diagnostics.
+5. Align CI/test infra for PG14/15/16 scenario execution (including PG16 matrix coverage).
+6. Stabilize test reproducibility and diagnostics.
 
 ### WP5: Optimization and finalization
 
