@@ -70,14 +70,15 @@ Structured around the three priority areas defined by the maintainer.
 
 ### Priority 1: Tablespace Implementation Sub-problems
 
-The current legacy incremental backup (`incr_backup_execute_14_to_16` in `wf_backup_incremental.c`) handles only `base/` and `global/` relation paths. All tablespace files under `pg_tblspc/` are either silently skipped or full-copied instead of incrementally backed up. There are five sub-problems to solve:
+The current legacy incremental backup (`incr_backup_execute_14_to_16` in `wf_backup_incremental.c`) handles only `base/` and `global/` relation paths. All tablespace files under `pg_tblspc/` are full-copied (see line 335) instead of incrementally backed up. There are five sub-problems to solve:
 
-#### S1: Discover tablespace OIDs and paths from the server
+#### S1: Discover tablespace OIDs and paths from existing file listing
 
-- Currently, the 14-16 path hardcodes `backup->number_of_tablespaces = 0` and never queries the server for tablespace information.
-- The PG17+ path already queries `SELECT spcname, pg_tablespace_location(oid) FROM pg_tablespace;` and builds a tablespace linked list — this same query works identically on PG14-16.
-- Reuse this pattern in the 14-16 path to enumerate all user-defined tablespaces before the backup loop begins.
-- After backup, populate `backup->tablespaces[]`, `backup->tablespaces_oids[]`, and `backup->tablespaces_paths[]` so the restore pipeline can correctly reconstruct tablespace symlinks and directories.
+- Currently, the 14-16 path hardcodes `backup->number_of_tablespaces = 0` and never discovers tablespace information.
+- The `get_paths()` function (line 1650) already processes the response from `pgmoneta_ext_get_files(".")`, which returns all server files including `pg_tblspc/` entries. It also already creates the corresponding directories in the backup.
+- Tablespace OIDs can be extracted directly from the returned paths (e.g., `pg_tblspc/16385/PG_16_202307071/...` → `spcOid = 16385`). This avoids a separate SQL query like `SELECT FROM pg_tablespace` and saves API calls.
+- During the file enumeration, collect unique tablespace OIDs and their version directories to populate `backup->tablespaces[]` and `backup->tablespaces_oids[]`.
+- For `backup->tablespaces_paths[]` (the physical symlink target needed by the restore pipeline), `get_paths()` alone does not provide this. Similarly, `backup->tablespaces[]` (tablespace name) derivation — whether OID-based stable naming or resolved real names — is tied to the same metadata resolution decision. The resolution method (e.g., reading symlink targets via the extension, or a minimal metadata query for discovered OIDs) is pending confirmation with the maintainer.
 
 #### S2: Parse tablespace relation file paths into `rel_file_locator`
 
@@ -96,6 +97,7 @@ else if (!strcmp(results[0], "pg_tblspc"))
 ```
 
 - The rest of the relation-file parsing (fork suffix, segment number) remains unchanged since it uses the same `<relfilenode>[_fork][.segno]` format regardless of location.
+- **Symlink handling**: entries in `pg_tblspc/` are symlinks pointing to actual tablespace locations (e.g., `pg_tblspc/16385` → `/data/tablespace1`). Following PostgreSQL's own `basebackup.c` behavior (see `sendDir`), symlink semantics must be preserved (copied as symlink metadata or reconstructed during restore). Only the actual relation files underneath the version directory (`pg_tblspc/<oid>/PG_<ver>/<dboid>/<relfilenode>`) go through incremental block-level treatment. Non-relation files and the symlinks themselves are always full-copied.
 
 #### S3: Route tablespace files through the incremental decision path
 
@@ -120,6 +122,9 @@ else if (!strcmp(results[0], "pg_tblspc"))
 - Tablespace path parsing follows PostgreSQL's `relpath.h` convention.
 - FSM forks are excluded from incremental tracking because PostgreSQL does not fully WAL-log them.
 - Block reads use `pg_read_binary_file` — PostgreSQL's standard server-side file access API.
+- Symlink semantics in `pg_tblspc/` are preserved; only relation files get incremental block-level treatment — matching `basebackup.c` `sendDir` behavior.
+- **Newly created tablespace/database check**: PostgreSQL's `GetFileBackupMethod` checks if a database OID/tablespace OID pairing was created since the previous backup (BRT entry with `relNumber=0`). If so, everything in that pairing must be fully backed up. This should be evaluated and adopted as feasible.
+- **Full-backup threshold**: PostgreSQL sends the whole file instead of incremental when 90%+ of blocks need sending (simpler, faster, and the incremental overhead isn't worth it). This optimization should be evaluated and adopted as feasible.
 - If timeline continuity cannot be guaranteed safely, fail fast with a clear error and require a new full backup.
 
 ---
@@ -205,36 +210,58 @@ All tests T1-T10 will be parameterized for PG14, 15, and 16 using the existing M
 
 ---
 
-### Priority 3 (Bonus): Performance Improvements
+### Priority 3 (Bonus): Reducing Backup Latency
 
-The current `incr_backup_execute_14_to_16` processes all files sequentially in a single loop. Three improvement areas:
+The current `incr_backup_execute_14_to_16` processes all files sequentially in a single loop. Several areas contribute to backup latency that can be improved:
 
 #### B1: Batch contiguous block reads
 
-- Currently, `write_incremental_file` issues one `pgmoneta_server_read_binary_file` call per modified block — one network round-trip per block.
+- `write_incremental_file` issues one `pgmoneta_server_read_binary_file` call per modified block — one network round-trip per block.
 - Since the block array is already sorted, contiguous block ranges can be detected and fetched in a single call by specifying a larger byte range.
-- This reduces round-trips from N blocks to the number of contiguous ranges, which is typically much smaller.
+- This reduces network round-trips from N blocks to the number of contiguous ranges.
 
 #### B2: Pre-allocate reusable block buffer
 
-- Currently, the block array (`incr_blocks`) is allocated via `malloc` and freed for every relation file in the loop.
-- Pre-allocating a single buffer sized to `rel_seg_size` before the loop and reusing it across files eliminates per-file allocation churn.
+- The block array (`incr_blocks`) is allocated via `malloc` and freed for every relation file in the loop.
+- Pre-allocating a single buffer sized to `rel_seg_size` before the loop and reusing it across all files eliminates per-file allocation overhead.
 
 #### B3: File-level parallelism via worker pool
 
 - Each file's processing (parse → BRT lookup → block read → write) is independent.
-- pgmoneta already provides a worker pool infrastructure (`workers.h`) used in the restore path (`do_reconstruct_backup_file`, `do_copy_backup_file`).
+- pgmoneta already provides a worker pool (`workers.h`) used in the restore path (`do_reconstruct_backup_file`, `do_copy_backup_file`).
 - A worker function can encapsulate the per-file logic and dispatch files to the pool.
-- Constraint: each worker needs its own server connection since block reads go through `pg_read_binary_file`. Connection management adds complexity and should be carefully evaluated.
+- Constraint: each worker needs its own server connection since block reads go through `pg_read_binary_file`. Connection management adds complexity.
 - Parallelism is safe because the BRT is read-only during the backup loop (summarization is complete before it starts).
+
+#### B4: Reorder BRT check before file stat to short-circuit earlier
+
+- The main loop currently calls `pgmoneta_server_file_stat` (network round-trip) for every relation file, then checks BRT.
+- Moving the BRT check before the stat call allows earlier short-circuit for unchanged files.
+- `pgmoneta_ext_get_files` already returns size metadata; if cached during `create_standard_directories`, unchanged-file paths can use cached size and avoid extra `pgmoneta_server_file_stat` calls.
+- If cached size is unavailable or considered stale for a path, fall back to `pgmoneta_server_file_stat` for correctness.
+
+#### B5: Overlap server reads with local writes
+
+- Currently, block reads from the server and writes to the local file happen strictly sequentially — read a block, write it, then read the next.
+- A double-buffering approach can overlap network I/O with disk I/O: while one buffer is being written to disk, the next block is fetched by a prefetch stage.
+- This requires asynchronous prefetch (reader/writer split or non-blocking flow); a single blocking loop alone will not create true overlap.
+- This hides network latency behind disk write time and can improve throughput for backups with many modified blocks.
 
 #### Evaluation approach
 
-1. Profile the sequential pipeline to identify where time is spent.
-2. Implement batch reads first (lowest risk, highest expected improvement).
-3. Implement buffer reuse second.
-4. Prototype file-level parallelism if time allows.
+1. Profile the sequential pipeline to measure where backup time is spent.
+2. Implement batch reads (B1) and stat-skip optimization (B4) first — lowest risk, highest expected improvement.
+3. Implement buffer reuse (B2) and double-buffering (B5) next.
+4. Prototype file-level parallelism (B3) if time allows.
 5. Verify correctness against baseline restore results before/after each change.
+
+#### Latency breadcrumbs (how gains will be measured)
+
+1. End-to-end incremental backup duration for fixed workloads (PG14/15/16).
+2. Number of server read calls per backup (`pgmoneta_server_read_binary_file` count).
+3. Number of `pgmoneta_server_file_stat` round-trips per backup.
+4. Effective data throughput (MiB/s) from cluster to backup directory.
+5. Restore correctness parity before/after each optimization pass.
 
 ---
 
