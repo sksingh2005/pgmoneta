@@ -72,13 +72,14 @@ Structured around the three priority areas defined by the maintainer.
 
 The current legacy incremental backup (`incr_backup_execute_14_to_16` in `wf_backup_incremental.c`) handles only `base/` and `global/` relation paths. All tablespace files under `pg_tblspc/` are full-copied (see line 335) instead of incrementally backed up. There are five sub-problems to solve:
 
-#### S1: Discover tablespace OIDs and paths from existing file listing
+#### S1: Discover tablespace structure from existing file listing
 
 - Currently, the 14-16 path hardcodes `backup->number_of_tablespaces = 0` and never discovers tablespace information.
 - The `get_paths()` function (line 1650) already processes the response from `pgmoneta_ext_get_files(".")`, which returns all server files including `pg_tblspc/` entries. It also already creates the corresponding directories in the backup.
 - Tablespace OIDs can be extracted directly from the returned paths (e.g., `pg_tblspc/16385/PG_16_202307071/...` → `spcOid = 16385`). This avoids a separate SQL query like `SELECT FROM pg_tablespace` and saves API calls.
-- During the file enumeration, collect unique tablespace OIDs and their version directories to populate `backup->tablespaces[]` and `backup->tablespaces_oids[]`.
-- For `backup->tablespaces_paths[]` (the physical symlink target needed by the restore pipeline), `get_paths()` alone does not provide this. Similarly, `backup->tablespaces[]` (tablespace name) derivation — whether OID-based stable naming or resolved real names — is tied to the same metadata resolution decision. The resolution method (e.g., reading symlink targets via the extension, or a minimal metadata query for discovered OIDs) is pending confirmation with the maintainer.
+- During the file enumeration, collect unique tablespace OIDs and version directories so the backup side can create one local directory per tablespace alongside `base`.
+- The `pg_tblspc/<oid>` entries in `backup_data` should then point to these local backup-side tablespace directories, matching the existing full-backup layout.
+- `backup->tablespaces_oids[]`, `backup->tablespaces[]`, and `backup->tablespaces_paths[]` should be filled from this derived layout and from whatever metadata source is finally used for stable naming/path mapping.
 
 #### S2: Parse tablespace relation file paths into `rel_file_locator`
 
@@ -96,8 +97,9 @@ else if (!strcmp(results[0], "pg_tblspc"))
 }
 ```
 
-- The rest of the relation-file parsing (fork suffix, segment number) remains unchanged since it uses the same `<relfilenode>[_fork][.segno]` format regardless of location.
-- **Symlink handling**: entries in `pg_tblspc/` are symlinks pointing to actual tablespace locations (e.g., `pg_tblspc/16385` → `/data/tablespace1`). Following PostgreSQL's own `basebackup.c` behavior (see `sendDir`), symlink semantics must be preserved (copied as symlink metadata or reconstructed during restore). Only the actual relation files underneath the version directory (`pg_tblspc/<oid>/PG_<ver>/<dboid>/<relfilenode>`) go through incremental block-level treatment. Non-relation files and the symlinks themselves are always full-copied.
+- The relation filename parsing itself (fork suffix, segment number) remains unchanged because PostgreSQL still uses the same `<relfilenode>[_fork][.segno]` naming convention for the actual relation files.
+- The important distinction is physical location: `pg_tblspc/<oid>` is only the cluster-relative entry point, while the real relation data lives in the mounted tablespace directory reached through that link. The legacy incremental path should therefore treat `pg_tblspc/<oid>/PG_<ver>/<dbOid>/<relfilenode>` as the logical cluster path for lookup and transfer, without assuming the bytes physically reside inside `pg_tblspc` itself.
+- **Symlink handling**: `pg_tblspc/<oid>` is part of the backup-side layout, not the main changed-block problem. The actual data lives in the corresponding local tablespace directory created alongside `base`, and `pg_tblspc/<oid>` should be unlinked/relinked to that local directory. Only relation files underneath the version directory (`pg_tblspc/<oid>/PG_<ver>/<dboid>/<relfilenode>`) go through incremental block-level treatment. Non-relation files and symlink entries themselves are handled as full backup artifacts.
 
 #### S3: Route tablespace files through the incremental decision path
 
@@ -110,10 +112,12 @@ else if (!strcmp(results[0], "pg_tblspc"))
 - The `rlocator` extracted from WAL records already includes the correct `spcOid` when the block belongs to a tablespace relation — this is how PostgreSQL encodes block references in WAL.
 - Once S2 and S3 are in place (so `parse_relation_file` produces the correct `spcOid` and the main loop routes tablespace files to BRT lookup), the existing `pgmoneta_brt_get_entry` call will find the correct changed blocks with no changes to WAL reading, summarization, or BRT logic.
 
-#### S5: Transfer modified tablespace blocks using pgmoneta extension
+#### S5: Transfer modified tablespace blocks to the pgmoneta side efficiently
 
-- The existing `pgmoneta_server_read_binary_file` call works with any relative path PostgreSQL can resolve, including tablespace paths. No transfer mechanism change needed.
-- For file discovery, `create_standard_directories` already calls `pgmoneta_ext_get_files(ssl, socket, ".", &qr)` which lists server files including `pg_tblspc/` entries. If needed, targeted `pgmoneta_ext_get_files` calls per tablespace can supplement this.
+- First evaluate whether the existing admin/server file APIs are sufficient for tablespace-backed relation files through cluster-relative paths under `pg_tblspc/...`.
+- If `pgmoneta_server_read_binary_file` and related server-side file access can read the required tablespace relation files correctly, reuse that path and avoid extra extension-specific transfer logic.
+- If the server APIs do not cover the required access pattern for tablespace data, fall back to extension-assisted transfer for those files.
+- For file discovery, `create_standard_directories` already calls `pgmoneta_ext_get_files(ssl, socket, ".", &qr)` which lists `pg_tblspc/` entries and can be reused to drive the local backup-side tablespace directory creation.
 
 #### PostgreSQL protocol compliance
 
@@ -121,8 +125,9 @@ else if (!strcmp(results[0], "pg_tblspc"))
 - WAL summarization uses previous checkpoint LSN to current start LSN — matching PostgreSQL's incremental semantics.
 - Tablespace path parsing follows PostgreSQL's `relpath.h` convention.
 - FSM forks are excluded from incremental tracking because PostgreSQL does not fully WAL-log them.
-- Block reads use `pg_read_binary_file` — PostgreSQL's standard server-side file access API.
-- Symlink semantics in `pg_tblspc/` are preserved; only relation files get incremental block-level treatment — matching `basebackup.c` `sendDir` behavior.
+- Block reads should prefer PostgreSQL's standard server-side file access APIs where they are sufficient; extension fallback is reserved for cases those APIs cannot cover.
+- Backup-side tablespace layout should mirror the existing full-backup model: local tablespace directories plus `pg_tblspc/<oid>` links to those directories.
+- Only relation files get incremental block-level treatment; non-relation files and symlink artifacts follow full-backup semantics.
 - **Newly created tablespace/database check**: PostgreSQL's `GetFileBackupMethod` checks if a database OID/tablespace OID pairing was created since the previous backup (BRT entry with `relNumber=0`). If so, everything in that pairing must be fully backed up. This should be evaluated and adopted as feasible.
 - **Full-backup threshold**: PostgreSQL sends the whole file instead of incremental when 90%+ of blocks need sending (simpler, faster, and the incremental overhead isn't worth it). This optimization should be evaluated and adopted as feasible.
 - If timeline continuity cannot be guaranteed safely, fail fast with a clear error and require a new full backup.
