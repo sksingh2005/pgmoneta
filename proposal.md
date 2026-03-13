@@ -128,6 +128,7 @@ else if (!strcmp(results[0], "pg_tblspc"))
 - Block reads should prefer PostgreSQL's standard server-side file access APIs where they are sufficient; extension fallback is reserved for cases those APIs cannot cover.
 - Backup-side tablespace layout should mirror the existing full-backup model: local tablespace directories plus `pg_tblspc/<oid>` links to those directories.
 - Only relation files get incremental block-level treatment; non-relation files and symlink artifacts follow full-backup semantics.
+- Unchanged tablespace relation files should follow the same legacy incremental state machine as unchanged relation files elsewhere: emit empty header-only incremental artifacts rather than relying on symlinks or parent-file reuse.
 - **Newly created tablespace/database check**: PostgreSQL's `GetFileBackupMethod` checks if a database OID/tablespace OID pairing was created since the previous backup (BRT entry with `relNumber=0`). If so, everything in that pairing must be fully backed up. This should be evaluated and adopted as feasible.
 - **Full-backup threshold**: PostgreSQL sends the whole file instead of incremental when 90%+ of blocks need sending (simpler, faster, and the incremental overhead isn't worth it). This optimization should be evaluated and adopted as feasible.
 - If timeline continuity cannot be guaranteed safely, fail fast with a clear error and require a new full backup.
@@ -206,6 +207,7 @@ Current test coverage is minimal — only basic chain creation and restore are t
 
 1. Full → incremental1 → incremental2 → incremental3 (tablespace mods at each step).
 2. Restore from latest, verify chain reconstruction is correct.
+3. Verify that `backup_manifest` includes the generated tablespace incremental artifacts with correct relative paths, sizes, and checksums.
 
 **T11. No regression in PG17+ flow**
 
