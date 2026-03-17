@@ -31,6 +31,7 @@
 #include <csv.h>
 #include <logging.h>
 #include <management.h>
+#include <restore.h>
 #include <security.h>
 #include <utils.h>
 #include <value.h>
@@ -45,6 +46,8 @@
 static char* verify_name(void);
 static int verify_execute(char*, struct art*);
 
+static int get_restore_last_file_index(char**, char*);
+static int process_verify_entry(struct art*, struct workers*, struct deque*, struct deque*, char*, char*);
 static void do_verify(struct worker_common* wc);
 
 struct workflow*
@@ -81,13 +84,17 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
    char* label = NULL;
    char* base = NULL;
    char* manifest_file = NULL;
+   char* deferred_files[3] = {0};
+   char* deferred_hashes[3] = {0};
    int number_of_columns = 0;
    char** columns = NULL;
    int number_of_workers = 0;
+   int last_file_index = -1;
    struct deque* failed_deque = NULL;
    struct deque* all_deque = NULL;
    struct csv_reader* csv = NULL;
    struct workers* workers = NULL;
+   char** restore_last_files_names = NULL;
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
@@ -141,53 +148,36 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
       goto error;
    }
 
+   if (pgmoneta_get_restore_last_files_names(&restore_last_files_names))
+   {
+      goto error;
+   }
+
    while (pgmoneta_csv_next_row(csv, &number_of_columns, &columns))
    {
-      struct worker_input* payload = NULL;
-      struct json* j = NULL;
-
-      if (pgmoneta_create_worker_input(NULL, NULL, NULL, -1, workers, &payload))
+      last_file_index = get_restore_last_file_index(restore_last_files_names, columns[0]);
+      if (last_file_index != -1)
       {
-         free(columns);
-         columns = NULL;
-         goto error;
-      }
+         deferred_files[last_file_index] = strdup(columns[0]);
+         deferred_hashes[last_file_index] = strdup(columns[1]);
 
-      if (pgmoneta_json_create(&j))
-      {
-         free(columns);
-         columns = NULL;
-         free(payload);
-         goto error;
-      }
-
-      pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_DIRECTORY, (uintptr_t)pgmoneta_art_search(nodes, NODE_TARGET_BASE), ValueString);
-      pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_FILENAME, (uintptr_t)columns[0], ValueString);
-      pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_ORIGINAL, (uintptr_t)columns[1], ValueString);
-      pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_HASH_ALGORITHM, (uintptr_t)"SHA512", ValueString);
-
-      payload->data = j;
-      payload->failed = failed_deque;
-      payload->all = all_deque;
-
-      if (number_of_workers > 0)
-      {
-         if (workers->outcome)
+         if (deferred_files[last_file_index] == NULL || deferred_hashes[last_file_index] == NULL)
          {
-            pgmoneta_workers_add(workers, do_verify, (struct worker_common*)payload);
-         }
-         else
-         {
-            pgmoneta_json_destroy(j);
-            free(payload);
             free(columns);
             columns = NULL;
             goto error;
          }
+
+         free(columns);
+         columns = NULL;
+         continue;
       }
-      else
+
+      if (process_verify_entry(nodes, workers, failed_deque, all_deque, columns[0], columns[1]))
       {
-         do_verify((struct worker_common*)payload);
+         free(columns);
+         columns = NULL;
+         goto error;
       }
 
       free(columns);
@@ -200,6 +190,16 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
       goto error;
    }
    pgmoneta_workers_destroy(workers);
+   workers = NULL;
+
+   for (int i = 0; restore_last_files_names[i] != NULL; i++)
+   {
+      if (deferred_files[i] != NULL &&
+          process_verify_entry(nodes, NULL, failed_deque, all_deque, deferred_files[i], deferred_hashes[i]))
+      {
+         goto error;
+      }
+   }
 
    pgmoneta_deque_list(failed_deque);
    pgmoneta_deque_list(all_deque);
@@ -208,6 +208,21 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
    pgmoneta_art_insert(nodes, NODE_ALL, (uintptr_t)all_deque, ValueDeque);
 
    pgmoneta_csv_reader_destroy(csv);
+
+   if (restore_last_files_names != NULL)
+   {
+      for (int i = 0; restore_last_files_names[i] != NULL; i++)
+      {
+         free(restore_last_files_names[i]);
+      }
+      free(restore_last_files_names);
+   }
+
+   for (int i = 0; i < 3; i++)
+   {
+      free(deferred_files[i]);
+      free(deferred_hashes[i]);
+   }
 
    free(columns);
    free(base);
@@ -230,10 +245,93 @@ error:
 
    pgmoneta_csv_reader_destroy(csv);
 
+   if (restore_last_files_names != NULL)
+   {
+      for (int i = 0; restore_last_files_names[i] != NULL; i++)
+      {
+         free(restore_last_files_names[i]);
+      }
+      free(restore_last_files_names);
+   }
+
+   for (int i = 0; i < 3; i++)
+   {
+      free(deferred_files[i]);
+      free(deferred_hashes[i]);
+   }
+
    free(columns);
    free(base);
    free(manifest_file);
 
+   return 1;
+}
+
+static int
+get_restore_last_file_index(char** restore_last_files_names, char* file_name)
+{
+   if (restore_last_files_names == NULL || file_name == NULL)
+   {
+      return -1;
+   }
+
+   for (int i = 0; restore_last_files_names[i] != NULL; i++)
+   {
+      if (pgmoneta_ends_with(file_name, restore_last_files_names[i]) ||
+          (restore_last_files_names[i][0] == '/' && pgmoneta_ends_with(file_name, &restore_last_files_names[i][1])))
+      {
+         return i;
+      }
+   }
+
+   return -1;
+}
+
+static int
+process_verify_entry(struct art* nodes, struct workers* workers, struct deque* failed_deque, struct deque* all_deque, char* filename, char* original)
+{
+   struct worker_input* payload = NULL;
+   struct json* j = NULL;
+
+   if (pgmoneta_create_worker_input(NULL, NULL, NULL, -1, workers, &payload))
+   {
+      goto error;
+   }
+
+   if (pgmoneta_json_create(&j))
+   {
+      free(payload);
+      goto error;
+   }
+
+   pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_DIRECTORY, (uintptr_t)pgmoneta_art_search(nodes, NODE_TARGET_BASE), ValueString);
+   pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_FILENAME, (uintptr_t)filename, ValueString);
+   pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_ORIGINAL, (uintptr_t)original, ValueString);
+   pgmoneta_json_put(j, MANAGEMENT_ARGUMENT_HASH_ALGORITHM, (uintptr_t)"SHA512", ValueString);
+
+   payload->data = j;
+   payload->failed = failed_deque;
+   payload->all = all_deque;
+
+   if (workers != NULL)
+   {
+      if (!workers->outcome)
+      {
+         goto error;
+      }
+
+      pgmoneta_workers_add(workers, do_verify, (struct worker_common*)payload);
+   }
+   else
+   {
+      do_verify((struct worker_common*)payload);
+   }
+
+   return 0;
+
+error:
+   pgmoneta_json_destroy(j);
+   free(payload);
    return 1;
 }
 
