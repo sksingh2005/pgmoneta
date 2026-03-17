@@ -29,6 +29,7 @@
 
 #include <pgmoneta.h>
 #include <configuration.h>
+#include <management.h>
 #include <tsclient.h>
 #include <tscommon.h>
 #include <mctf.h>
@@ -141,6 +142,10 @@ MCTF_TEST(test_pgmoneta_server_zstd_backup_restore)
    char* pg_version_str = NULL;
    int pg_version = 0;
    struct main_configuration* config = NULL;
+   struct json* verify_response = NULL;
+   struct json* response = NULL;
+   struct json* files = NULL;
+   struct json* failed = NULL;
 
    pgmoneta_test_setup();
 
@@ -175,11 +180,29 @@ MCTF_TEST(test_pgmoneta_server_zstd_backup_restore)
    MCTF_ASSERT(pgmoneta_tsclient_backup("primary", NULL, 0) == 0,
                cleanup, "backup with server-zstd compression and AES encryption failed");
 
+   MCTF_ASSERT(pgmoneta_tsclient_verify("primary", "newest", TEST_BASE_DIR, "all", &verify_response, 0) == 0,
+               cleanup, "verify of server-zstd compressed backup failed");
+
+   response = (struct json*)pgmoneta_json_get(verify_response, MANAGEMENT_CATEGORY_RESPONSE);
+   MCTF_ASSERT_PTR_NONNULL(response, cleanup, "verify response payload is missing");
+
+   files = (struct json*)pgmoneta_json_get(response, MANAGEMENT_ARGUMENT_FILES);
+   MCTF_ASSERT_PTR_NONNULL(files, cleanup, "verify files payload is missing");
+
+   failed = (struct json*)pgmoneta_json_get(files, MANAGEMENT_ARGUMENT_FAILED);
+   MCTF_ASSERT_PTR_NONNULL(failed, cleanup, "verify failed-file list is missing");
+   MCTF_ASSERT_INT_EQ(pgmoneta_json_array_length(failed), 0, cleanup,
+                      "fresh server-zstd + aes backup should verify without failed files");
+
    /* Restore newest backup */
    MCTF_ASSERT(pgmoneta_tsclient_restore("primary", "newest", "current", 0) == 0,
                cleanup, "restore of server-zstd compressed backup failed");
 
 cleanup:
+   if (verify_response != NULL)
+   {
+      pgmoneta_json_destroy(verify_response);
+   }
    pgmoneta_test_basedir_cleanup();
    MCTF_FINISH();
 }

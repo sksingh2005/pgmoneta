@@ -204,7 +204,7 @@ MCTF_TEST(test_cli_verify)
    pgmoneta_snprintf(path, sizeof(path), "%s/verify_test", TEST_BASE_DIR);
    pgmoneta_mkdir(path);
 
-   MCTF_ASSERT(pgmoneta_tsclient_verify("primary", "newest", path, NULL, 0) == 0, cleanup, "Verify newest failed");
+   MCTF_ASSERT(pgmoneta_tsclient_verify("primary", "newest", path, NULL, NULL, 0) == 0, cleanup, "Verify newest failed");
 
    pgmoneta_delete_directory(path);
 
@@ -389,7 +389,7 @@ MCTF_TEST_NEGATIVE(test_cli_negative)
                "Annotate invalid_server should fail with NOSERVER");
 
    /* Verify invalid server */
-   MCTF_ASSERT(pgmoneta_tsclient_verify("invalid_server", "newest", NULL, NULL, MANAGEMENT_ERROR_VERIFY_NOSERVER) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_verify("invalid_server", "newest", NULL, NULL, NULL, MANAGEMENT_ERROR_VERIFY_NOSERVER) == 0, cleanup,
                "Verify invalid_server should fail with NOSERVER");
 
    /* Archive invalid server */

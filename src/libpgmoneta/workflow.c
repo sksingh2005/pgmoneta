@@ -516,6 +516,9 @@ wf_restore(struct backup* backup)
    head = pgmoneta_create_restore();
    current = head;
 
+   current->next = pgmoneta_restore_excluded_files();
+   current = current->next;
+
    if (backup->encryption != ENCRYPTION_NONE)
    {
       current->next = pgmoneta_encryption(false);
@@ -546,9 +549,6 @@ wf_restore(struct backup* backup)
    current = current->next;
 
    current->next = pgmoneta_create_recovery_info();
-   current = current->next;
-
-   current->next = pgmoneta_restore_excluded_files();
    current = current->next;
 
    current->next = pgmoneta_create_permissions(PERMISSION_TYPE_RESTORE);
@@ -811,6 +811,9 @@ wf_verify(struct backup* backup)
    head = pgmoneta_create_restore();
    current = head;
 
+   current->next = pgmoneta_restore_excluded_files();
+   current = current->next;
+
    if (backup->encryption != ENCRYPTION_NONE)
    {
       current->next = pgmoneta_encryption(false);
@@ -836,9 +839,6 @@ wf_verify(struct backup* backup)
          current = current->next;
          break;
    }
-
-   current->next = pgmoneta_restore_excluded_files();
-   current = current->next;
 
    current->next = pgmoneta_create_permissions(PERMISSION_TYPE_RESTORE);
    current = current->next;

@@ -148,11 +148,16 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
 
       if (pgmoneta_create_worker_input(NULL, NULL, NULL, -1, workers, &payload))
       {
+         free(columns);
+         columns = NULL;
          goto error;
       }
 
       if (pgmoneta_json_create(&j))
       {
+         free(columns);
+         columns = NULL;
+         free(payload);
          goto error;
       }
 
@@ -170,6 +175,14 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
          if (workers->outcome)
          {
             pgmoneta_workers_add(workers, do_verify, (struct worker_common*)payload);
+         }
+         else
+         {
+            pgmoneta_json_destroy(j);
+            free(payload);
+            free(columns);
+            columns = NULL;
+            goto error;
          }
       }
       else
@@ -196,6 +209,7 @@ verify_execute(char* name __attribute__((unused)), struct art* nodes)
 
    pgmoneta_csv_reader_destroy(csv);
 
+   free(columns);
    free(base);
    free(manifest_file);
 
@@ -216,6 +230,7 @@ error:
 
    pgmoneta_csv_reader_destroy(csv);
 
+   free(columns);
    free(base);
    free(manifest_file);
 

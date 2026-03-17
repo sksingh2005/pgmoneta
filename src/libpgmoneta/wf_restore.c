@@ -901,11 +901,14 @@ error:
       pgmoneta_workers_destroy(workers);
    }
 
-   for (int i = 0; restore_last_files_names[i] != NULL; i++)
+   if (restore_last_files_names != NULL)
    {
-      free(restore_last_files_names[i]);
+      for (int i = 0; restore_last_files_names[i] != NULL; i++)
+      {
+         free(restore_last_files_names[i]);
+      }
+      free(restore_last_files_names);
    }
-   free(restore_last_files_names);
    free(from);
    free(to);
    free(suffix);
@@ -984,11 +987,14 @@ restore_excluded_files_teardown(char* name __attribute__((unused)), struct art* 
    return 0;
 
 error:
-   for (int i = 0; restore_last_files_names[i] != NULL; i++)
+   if (restore_last_files_names != NULL)
    {
-      free(restore_last_files_names[i]);
+      for (int i = 0; restore_last_files_names[i] != NULL; i++)
+      {
+         free(restore_last_files_names[i]);
+      }
+      free(restore_last_files_names);
    }
-   free(restore_last_files_names);
    free(to);
    free(suffix);
 
