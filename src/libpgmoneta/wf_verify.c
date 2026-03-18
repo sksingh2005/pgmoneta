@@ -300,7 +300,6 @@ process_verify_entry(struct art* nodes, struct workers* workers, struct deque* f
 
    if (pgmoneta_json_create(&j))
    {
-      free(payload);
       goto error;
    }
 
